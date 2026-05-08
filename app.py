@@ -4,16 +4,15 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "OpenClaw activo 🧠"
+    return "OpenClaw activo"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
-    print("Mensaje recibido:", data)
+    message = data.get("message", "")
 
     return jsonify({
-        "status": "ok",
-        "message": "Recibido por OpenClaw"
+        "reply": f"OpenClaw recibió: {message}"
     })
 
 if __name__ == "__main__":
