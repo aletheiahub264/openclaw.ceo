@@ -8,12 +8,15 @@ def home():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json
+    data = request.get_json(force=True)
+
     message = data.get("message", "")
 
-    return jsonify({
+    response = {
         "reply": f"OpenClaw recibió: {message}"
-    })
+    }
+
+    return jsonify(response), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
