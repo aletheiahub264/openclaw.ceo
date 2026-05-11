@@ -3,4 +3,3 @@ requests
 supabase
 python-dotenv
 gunicorn
-gunicorn==21.2.0
