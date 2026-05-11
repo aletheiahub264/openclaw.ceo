@@ -3,7 +3,6 @@ import os
 from collections import deque
 from flask import Flask, request
 import requests
-from supabase import create_client, Client
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,17 +12,28 @@ log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+# ─── CONFIG ────────────────────────────────────────────────
+TOKEN        = os.environ.get("TELEGRAM_TOKEN", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
-
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# ─── SUPABASE OPCIONAL ──────────────────────────────────────
+supabase = None
 
-_seen_ids: set = set()
-_seen_queue: deque = deque(maxlen=500)
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        from supabase import create_client
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        log.info("Supabase conectado correctamente")
+    except Exception as e:
+        log.error(f"Supabase no pudo iniciar, continuando sin el: {e}")
+else:
+    log.warning("Variables de Supabase no configuradas, modo sin base de datos")
 
+# ─── ANTI-DUPLICADOS ────────────────────────────────────────
+_seen_ids: set   = set()
+_seen_queue      = deque(maxlen=500)
 
 def is_duplicate(update_id: int) -> bool:
     if update_id in _seen_ids:
@@ -34,14 +44,14 @@ def is_duplicate(update_id: int) -> bool:
     _seen_ids.add(update_id)
     return False
 
-
+# ─── MODO ───────────────────────────────────────────────────
 def detect_mode(text: str) -> str:
     keywords = {"vender", "dinero", "negocio", "cliente", "venta"}
     if any(w in text.lower() for w in keywords):
         return "ceo"
     return "personal"
 
-
+# ─── TELEGRAM ───────────────────────────────────────────────
 def send_message(chat_id: int, text: str) -> None:
     try:
         r = requests.post(
@@ -54,40 +64,37 @@ def send_message(chat_id: int, text: str) -> None:
     except Exception as e:
         log.error(f"Error enviando a Telegram: {e}")
 
-
+# ─── SUPABASE INSERT (no bloquea si falla) ──────────────────
 def save_interaction(chat_id: int, message: str, response: str, mode: str) -> None:
-    payload = {
-        "telegram_id": str(chat_id),
-        "message": message,
-        "response": response,
-        "mode": mode
-    }
-    log.info(f"Intentando guardar en Supabase: {payload}")
+    if supabase is None:
+        log.warning("Supabase no disponible, mensaje no guardado")
+        return
     try:
-        result = (
-            supabase
-            .table("interactions")
-            .insert(payload)
-            .execute()
-        )
+        result = supabase.table("interactions").insert({
+            "telegram_id": str(chat_id),
+            "message":     message,
+            "response":    response,
+            "mode":        mode
+        }).execute()
         if result.data:
             log.info(f"Guardado en Supabase: {result.data}")
         else:
-            log.warning("Insert vacio en Supabase, revisa RLS o permisos")
+            log.warning("Supabase no guardo datos, revisa RLS o permisos")
     except Exception as e:
-        log.error(f"Excepcion en Supabase insert: {e}")
+        log.error(f"Error en Supabase insert: {e}")
 
-
+# ─── ROUTES ─────────────────────────────────────────────────
 @app.route("/")
 def home():
-    return "OpenClaw activo"
-
+    return "OpenClaw activo", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    log.info("Webhook recibido")
+
     data = request.get_json(silent=True)
     if not data:
-        log.warning("Webhook recibio payload vacio o no-JSON")
+        log.warning("Payload vacio o no-JSON")
         return "ok", 200
 
     if "message" not in data:
@@ -95,12 +102,12 @@ def webhook():
 
     update_id = data.get("update_id")
     if update_id and is_duplicate(update_id):
-        log.info(f"Update duplicado ignorado: {update_id}")
+        log.info(f"Duplicado ignorado: {update_id}")
         return "ok", 200
 
-    msg = data["message"]
+    msg     = data["message"]
     chat_id = msg["chat"]["id"]
-    text = msg.get("text", "").strip()
+    text    = msg.get("text", "").strip()
 
     if not text:
         log.info("Mensaje sin texto ignorado")
@@ -108,7 +115,7 @@ def webhook():
 
     log.info(f"Mensaje de {chat_id}: {text!r}")
 
-    mode = detect_mode(text)
+    mode          = detect_mode(text)
     response_text = f"[{mode.upper()}] OpenClaw recibio: {text}"
 
     send_message(chat_id, response_text)
@@ -116,7 +123,8 @@ def webhook():
 
     return "ok", 200
 
-
+# ─── MAIN ───────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
+    log.info(f"Iniciando OpenClaw en puerto {port}")
     app.run(host="0.0.0.0", port=port)
