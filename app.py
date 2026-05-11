@@ -1,111 +1,127 @@
+import logging
+import os
+from collections import deque
 from flask import Flask, request
 import requests
-from supabase import create_client
-from collections import deque
-import logging
+from supabase import create_client, Client
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ─── LOGGING ────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+log = logging.getLogger(__name__)
 
+# ─── APP ────────────────────────────────────────────────────
 app = Flask(__name__)
 
-# 🔵 TELEGRAM
-TOKEN = "8748023432:AAHNN7yNo2jmAO4ddRIrAEG4lwaLstuYUoA"
+# ─── CONFIG (desde variables de entorno) ────────────────────
+TOKEN        = os.environ.get("TELEGRAM_TOKEN", "")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")   # anon/public key
+
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
-# 🟢 SUPABASE
-SUPABASE_URL = "https://mcjfaqtrygprcbjkhect.supabase.co"
-SUPABASE_KEY = "sb_publishable_0Nqd3lazIAnzIEa1nb6Dxw_SDTT7uR"
+# ─── SUPABASE ───────────────────────────────────────────────
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+# ─── ANTI-DUPLICADOS (en memoria, simple para MVP) ──────────
+_seen_ids: set       = set()
+_seen_queue: deque   = deque(maxlen=500)   # libera los más viejos
 
-# 🔥 ANTI DUPLICADOS — deque con límite para evitar memory leak
-MAX_PROCESSED = 1000
-processed_ids = deque(maxlen=MAX_PROCESSED)
-processed_ids_set = set()
-
-def is_duplicate(update_id):
-    if update_id in processed_ids_set:
+def is_duplicate(update_id: int) -> bool:
+    if update_id in _seen_ids:
         return True
-    # Si el deque está lleno, eliminar el más antiguo del set también
-    if len(processed_ids) == MAX_PROCESSED:
-        oldest = processed_ids[0]
-        processed_ids_set.discard(oldest)
-    processed_ids.append(update_id)
-    processed_ids_set.add(update_id)
+    if len(_seen_queue) == 500:
+        _seen_ids.discard(_seen_queue[0])   # libera el más antiguo
+    _seen_queue.append(update_id)
+    _seen_ids.add(update_id)
     return False
 
-@app.route("/")
-def home():
-    return "OpenClaw activo"
-
-# 💾 GUARDAR EN SUPABASE
-def save_message(chat_id, message, response, mode):
-    try:
-        supabase.table("interactions").insert({
-            "telegram_id": str(chat_id),
-            "message": message,
-            "response": response,
-            "mode": mode
-        }).execute()
-    except Exception as e:
-        logger.error(f"Error Supabase: {e}")
-
-# 📩 ENVIAR A TELEGRAM — con timeout
-def send_telegram_message(chat_id, text):
-    try:
-        resp = requests.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
-            timeout=10  # ✅ Evita que el webhook se cuelgue
-        )
-        resp.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error enviando a Telegram: {e}")
-
-# 🧠 DETECTOR DE MODO
-def detect_mode(text):
-    text_lower = text.lower()
-    if any(word in text_lower for word in ["vender", "dinero", "negocio"]):
+# ─── MODO ───────────────────────────────────────────────────
+def detect_mode(text: str) -> str:
+    keywords = {"vender", "dinero", "negocio", "cliente", "venta"}
+    if any(w in text.lower() for w in keywords):
         return "ceo"
     return "personal"
 
-# 🤖 GENERAR RESPUESTA SEGÚN MODO
-def generate_response(text, mode):
-    if not text:
-        return None  # ✅ No responder a mensajes sin texto
-    if mode == "ceo":
-        return f"[Modo CEO] Analizando tu consulta de negocio: {text}"
-    return f"SUPABASE TEST OK"
+# ─── TELEGRAM ───────────────────────────────────────────────
+def send_message(chat_id: int, text: str) -> None:
+    try:
+        r = requests.post(
+            f"{TELEGRAM_API}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=10
+        )
+        r.raise_for_status()
+        log.info(f"✅ Mensaje enviado a {chat_id}")
+    except Exception as e:
+        log.error(f"❌ Error enviando a Telegram: {e}")
+
+# ─── SUPABASE INSERT ────────────────────────────────────────
+def save_interaction(chat_id: int, message: str, response: str, mode: str) -> None:
+    payload = {
+        "telegram_id": str(chat_id),
+        "message":     message,
+        "response":    response,
+        "mode":        mode
+    }
+    log.info(f"💾 Intentando guardar en Supabase: {payload}")
+    try:
+        result = (
+            supabase
+            .table("interactions")
+            .insert(payload)
+            .execute()
+        )
+        # Supabase devuelve lista vacía si RLS bloqueó el insert
+        if result.data:
+            log.info(f"✅ Guardado en Supabase: {result.data}")
+        else:
+            log.warning("⚠️  Insert ejecutado pero Supabase devolvió data vacía — revisa RLS o permisos")
+    except Exception as e:
+        log.error(f"❌ Excepción en Supabase insert: {e}")
+
+# ─── ROUTES ─────────────────────────────────────────────────
+@app.route("/")
+def home():
+    return "OpenClaw activo ✅"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json(silent=True)  # ✅ silent=True evita error 400 si el body no es JSON
+    data = request.get_json(silent=True)
+    if not data:
+        log.warning("⚠️  Webhook recibió payload vacío o no-JSON")
+        return "ok", 200
 
-    if not data or "message" not in data:
-        return "ok"
+    # Ignorar updates sin mensaje de texto
+    if "message" not in data:
+        return "ok", 200
 
-    # 🔥 ANTI DUPLICADOS
     update_id = data.get("update_id")
     if update_id and is_duplicate(update_id):
-        return "ok"
+        log.info(f"🔁 Update duplicado ignorado: {update_id}")
+        return "ok", 200
 
-    message = data["message"]
-    chat_id = message["chat"]["id"]
-    text = message.get("text", "").strip()
+    msg     = data["message"]
+    chat_id = msg["chat"]["id"]
+    text    = msg.get("text", "").strip()
 
-    # ✅ Ignorar mensajes sin texto (fotos, stickers, etc.)
     if not text:
-        return "ok"
+        log.info("ℹ️  Mensaje sin texto (foto, sticker, etc.) — ignorado")
+        return "ok", 200
 
-    mode = detect_mode(text)
-    response_text = generate_response(text, mode)
+    log.info(f"📩 Mensaje de {chat_id}: {text!r}")
 
-    if response_text:
-        send_telegram_message(chat_id, response_text)
-        save_message(chat_id, text, response_text, mode)
+    mode          = detect_mode(text)
+    response_text = f"[{mode.upper()}] OpenClaw recibió: {text}"
 
-    return "ok"
+    send_message(chat_id, response_text)
+    save_interaction(chat_id, text, response_text, mode)
 
+    return "ok", 200
+
+# ─── MAIN ───────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
