@@ -76,7 +76,7 @@ def generate_response(text, mode):
         return None  # ✅ No responder a mensajes sin texto
     if mode == "ceo":
         return f"[Modo CEO] Analizando tu consulta de negocio: {text}"
-    return f"OpenClaw recibió: {text}"
+    return f"SUPABASE TEST OK"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
