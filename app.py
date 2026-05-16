@@ -3,11 +3,18 @@ import time
 import uuid
 import random
 import logging
-from flask import Flask, request
+from flask import Flask, request, render_template
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("OpenClawV4")
+
+# ─────────────────────────────
+# LANDING WEB (ESTO ERA LO QUE TE FALTABA)
+# ─────────────────────────────
+@app.route("/")
+def home():
+    return render_template("index.html")
 
 # ─────────────────────────────
 # CONFIG
@@ -41,7 +48,6 @@ if SUPABASE_URL and SUPABASE_KEY:
 LEADS = {}
 CONVERSIONS = {}
 CLICKS = {}
-_seen = set()
 
 # ─────────────────────────────
 # UTIL
@@ -58,7 +64,7 @@ def safe_post(url, **kwargs):
         return None
 
 # ─────────────────────────────
-# TRACKING CORE (CLICKS + CONVERSIONS)
+# TRACKING
 # ─────────────────────────────
 def track_click(lead_id):
     CLICKS[lead_id] = CLICKS.get(lead_id, 0) + 1
@@ -67,16 +73,12 @@ def track_conversion(lead_id, value=1.0):
     CONVERSIONS[lead_id] = CONVERSIONS.get(lead_id, 0) + value
 
 # ─────────────────────────────
-# SCORING REAL (DINERO > INTERÉS)
+# SCORING
 # ─────────────────────────────
 def lead_score(lead_id):
     clicks = CLICKS.get(lead_id, 0)
     conv = CONVERSIONS.get(lead_id, 0)
-
     return (conv * 10) + clicks
-
-def best_leads():
-    return sorted(LEADS.items(), key=lambda x: lead_score(x[0]), reverse=True)
 
 # ─────────────────────────────
 # CLASIFICACIÓN
@@ -93,21 +95,19 @@ def classify(text):
     return "cold"
 
 # ─────────────────────────────
-# FUNNEL DINÁMICO
+# FUNNEL
 # ─────────────────────────────
 def funnel(mode, lead_id):
     base_url = "https://beacons.ai/aletheiahub.ai?lead=" + lead_id
 
     if mode == "hot":
         return f"🔥 Listo para automatizar tu negocio.\n👉 {base_url}"
-
     if mode == "warm":
         return f"💡 Te muestro cómo conseguir clientes automáticamente.\n👉 {base_url}"
-
     return f"🚀 Descubre cómo la IA puede ayudarte.\n👉 {base_url}"
 
 # ─────────────────────────────
-# CONTENIDO OPTIMIZADO POR DINERO
+# CONTENIDO
 # ─────────────────────────────
 HOOKS = [
     "Negocios están perdiendo clientes por no automatizar",
@@ -139,7 +139,7 @@ def send(chat_id, text):
     )
 
 # ─────────────────────────────
-# PINTEREST TRAFFIC ENGINE
+# PINTEREST
 # ─────────────────────────────
 def publish(content):
     if not PINTEREST_TOKEN or not PINTEREST_BOARD:
@@ -165,38 +165,6 @@ def publish(content):
     return r is not None and r.status_code in [200, 201]
 
 # ─────────────────────────────
-# DATABASE (SUPABASE OPTIONAL)
-# ─────────────────────────────
-def save_lead(lead_id, text, mode):
-    if supabase:
-        try:
-            supabase.table("leads").insert({
-                "lead_id": lead_id,
-                "message": text,
-                "mode": mode
-            }).execute()
-        except:
-            pass
-
-def save_metrics():
-    if supabase:
-        try:
-            supabase.table("metrics").insert({
-                "clicks": CLICKS,
-                "conversions": CONVERSIONS
-            }).execute()
-        except:
-            pass
-
-# ─────────────────────────────
-# LEARNING ENGINE (REAL OPTIMIZATION)
-# ─────────────────────────────
-def best_strategy():
-    if not CONVERSIONS:
-        return "hot"
-    return max(CONVERSIONS, key=CONVERSIONS.get)
-
-# ─────────────────────────────
 # WEBHOOK
 # ─────────────────────────────
 @app.route("/webhook", methods=["POST"])
@@ -213,50 +181,19 @@ def webhook():
     if not text:
         return "ok"
 
-    # ───────────────
-    # LEAD ID
-    # ───────────────
     lead_id = str(chat_id)
-
-    # ───────────────
-    # CLASSIFY
-    # ───────────────
     mode = classify(text)
 
-    # ───────────────
-    # TRACK LEAD
-    # ───────────────
-    LEADS[lead_id] = mode
-    save_lead(lead_id, text, mode)
-
-    # ───────────────
-    # CLICK SIMULATION (REAL WORLD TRACKING REQUIRIRÍA PIXEL)
-    # ───────────────
     track_click(lead_id)
 
-    # ───────────────
-    # RESPONSE FUNNEL
-    # ───────────────
     send(chat_id, funnel(mode, lead_id))
 
-    # ───────────────
-    # CONTENT ENGINE
-    # ───────────────
     content = generate_content()
 
-    # ───────────────
-    # TRAFFIC ENGINE
-    # ───────────────
     if mode in ["cold", "warm"]:
         publish(content)
 
-    # ───────────────
-    # OPTIMIZATION STEP
-    # ───────────────
-    save_metrics()
-
     return "ok"
-
 
 # ─────────────────────────────
 # START
