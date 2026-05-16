@@ -1,28 +1,32 @@
 import os
-import time
 import uuid
 import random
 import logging
-from flask import Flask, request, render_template
+from flask import Flask, request
 
-app = Flask(__name__)
+# ─────────────────────────────
+# APP (RAILWAY SAFE MODE)
+# ─────────────────────────────
+app = Flask(__name__, template_folder="templates")
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("OpenClawV4")
 
 # ─────────────────────────────
-# LANDING WEB (ESTO ERA LO QUE TE FALTABA)
+# LANDING WEB (SIN DEPENDENCIA CRÍTICA)
 # ─────────────────────────────
 @app.route("/")
 def home():
-    return render_template("index.html")
+    try:
+        from flask import render_template
+        return render_template("index.html")
+    except Exception as e:
+        log.error(e)
+        return "OpenClaw activo - Landing no disponible"
 
 # ─────────────────────────────
 # CONFIG
 # ─────────────────────────────
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
-
 PINTEREST_TOKEN = os.environ.get("PINTEREST_ACCESS_TOKEN", "")
 PINTEREST_BOARD = os.environ.get("PINTEREST_BOARD_ID", "")
 PINTEREST_API = "https://api.pinterest.com/v5"
@@ -34,16 +38,8 @@ try:
 except:
     http = None
 
-supabase = None
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
-        from supabase import create_client
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    except Exception as e:
-        log.error(e)
-
 # ─────────────────────────────
-# MEMORIA LOCAL (fallback)
+# MEMORIA
 # ─────────────────────────────
 LEADS = {}
 CONVERSIONS = {}
@@ -52,9 +48,6 @@ CLICKS = {}
 # ─────────────────────────────
 # UTIL
 # ─────────────────────────────
-def gen_id():
-    return str(uuid.uuid4())
-
 def safe_post(url, **kwargs):
     if http is None:
         return None
@@ -62,23 +55,6 @@ def safe_post(url, **kwargs):
         return http.post(url, timeout=10, **kwargs)
     except:
         return None
-
-# ─────────────────────────────
-# TRACKING
-# ─────────────────────────────
-def track_click(lead_id):
-    CLICKS[lead_id] = CLICKS.get(lead_id, 0) + 1
-
-def track_conversion(lead_id, value=1.0):
-    CONVERSIONS[lead_id] = CONVERSIONS.get(lead_id, 0) + value
-
-# ─────────────────────────────
-# SCORING
-# ─────────────────────────────
-def lead_score(lead_id):
-    clicks = CLICKS.get(lead_id, 0)
-    conv = CONVERSIONS.get(lead_id, 0)
-    return (conv * 10) + clicks
 
 # ─────────────────────────────
 # CLASIFICACIÓN
@@ -101,17 +77,17 @@ def funnel(mode, lead_id):
     base_url = "https://beacons.ai/aletheiahub.ai?lead=" + lead_id
 
     if mode == "hot":
-        return f"🔥 Listo para automatizar tu negocio.\n👉 {base_url}"
+        return f"🔥 Automatización lista.\n👉 {base_url}"
     if mode == "warm":
-        return f"💡 Te muestro cómo conseguir clientes automáticamente.\n👉 {base_url}"
-    return f"🚀 Descubre cómo la IA puede ayudarte.\n👉 {base_url}"
+        return f"💡 Descubre cómo conseguir clientes.\n👉 {base_url}"
+    return f"🚀 IA para tu negocio.\n👉 {base_url}"
 
 # ─────────────────────────────
-# CONTENIDO
+# CONTENT
 # ─────────────────────────────
 HOOKS = [
-    "Negocios están perdiendo clientes por no automatizar",
-    "La IA está reemplazando procesos de ventas",
+    "Negocios pierden clientes por no automatizar",
+    "La IA está cambiando las ventas",
     "Automatizar marketing ya es obligatorio"
 ]
 
@@ -133,6 +109,8 @@ def generate_content():
 # TELEGRAM
 # ─────────────────────────────
 def send(chat_id, text):
+    if http is None:
+        return
     safe_post(
         f"{TELEGRAM_API}/sendMessage",
         json={"chat_id": chat_id, "text": text}
@@ -142,7 +120,7 @@ def send(chat_id, text):
 # PINTEREST
 # ─────────────────────────────
 def publish(content):
-    if not PINTEREST_TOKEN or not PINTEREST_BOARD:
+    if not PINTEREST_TOKEN or not PINTEREST_BOARD or http is None:
         return False
 
     r = safe_post(
@@ -183,8 +161,6 @@ def webhook():
 
     lead_id = str(chat_id)
     mode = classify(text)
-
-    track_click(lead_id)
 
     send(chat_id, funnel(mode, lead_id))
 
